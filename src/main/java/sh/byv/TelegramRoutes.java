@@ -1,0 +1,257 @@
+package sh.byv;
+
+import jakarta.enterprise.context.ApplicationScoped;
+import java.util.List;
+import java.util.UUID;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.camel.ProducerTemplate;
+import org.apache.camel.builder.RouteBuilder;
+import org.apache.camel.component.telegram.model.AnswerPreCheckoutQueryMessage;
+import org.apache.camel.component.telegram.model.AnswerShippingQueryMessage;
+import org.apache.camel.component.telegram.model.CreateInvoiceLinkMessage;
+import org.apache.camel.component.telegram.model.EditMessageTextMessage;
+import org.apache.camel.component.telegram.model.IncomingCallbackQuery;
+import org.apache.camel.component.telegram.model.IncomingMessage;
+import org.apache.camel.component.telegram.model.InlineKeyboardButton;
+import org.apache.camel.component.telegram.model.InlineKeyboardMarkup;
+import org.apache.camel.component.telegram.model.LabeledPrice;
+import org.apache.camel.component.telegram.model.MessageResult;
+import org.apache.camel.component.telegram.model.MessageResultBoolean;
+import org.apache.camel.component.telegram.model.MessageResultString;
+import org.apache.camel.component.telegram.model.OutgoingTextMessage;
+import org.apache.camel.component.telegram.model.PreCheckoutQuery;
+import org.apache.camel.component.telegram.model.ReplyMarkup;
+import org.apache.camel.component.telegram.model.SendInvoiceMessage;
+import org.apache.camel.component.telegram.model.ShippingOption;
+import org.apache.camel.component.telegram.model.ShippingQuery;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
+
+@Slf4j
+@ApplicationScoped
+@RequiredArgsConstructor
+public class TelegramRoutes extends RouteBuilder {
+
+    static final String TELEGRAM_STARS = "telegram-start";
+    static final String INVOICE_LINK = "invoice-link";
+    static final String CREDIT_CARD = "credit-card";
+
+    final ProducerTemplate producer;
+
+    @ConfigProperty(name = "tg.payment.token")
+    String paymentToken;
+
+    @Override
+    public void configure() {
+        from("telegram:bots").to("seda:processing?blockWhenFull=true");
+        from("direct:send").to("telegram:bots");
+
+        from("seda:processing?concurrentConsumers=16").process(exchange -> {
+            final var messageBody = exchange.getMessage().getBody();
+
+            if (messageBody instanceof IncomingMessage incomingMessage) {
+                if (incomingMessage.getSuccessfulPayment() != null) {
+                    final var successfulPayment = incomingMessage.getSuccessfulPayment();
+                    log.info("Successful payment, {}", successfulPayment);
+                } else {
+                    final var text = incomingMessage.getText();
+                    final var chatId = incomingMessage.getChat().getId();
+
+                    if (text.equals("/start")) {
+                        sendMessage(
+                                chatId, "Hello, " + incomingMessage.getFrom().getFirstName());
+                        sendPaymentRequest(chatId);
+                    }
+                }
+            } else if (messageBody instanceof IncomingCallbackQuery callbackQuery) {
+                log.info("Callback query, {}", callbackQuery);
+
+                final var chatId = callbackQuery.getMessage().getChat().getId();
+
+                switch (callbackQuery.getData()) {
+                    case CREDIT_CARD -> {
+                        hidePaymentKeyboard(callbackQuery.getMessage(), "You selected credit card payment.");
+                        sendInvoice(chatId);
+                    }
+                    case INVOICE_LINK -> {
+                        hidePaymentKeyboard(callbackQuery.getMessage(), "You selected payment via invoice link.");
+                        final var invoiceLink = createInvoiceLink();
+                        sendMessage(chatId, "Your invoice link: " + invoiceLink);
+                    }
+                    case TELEGRAM_STARS -> {
+                        hidePaymentKeyboard(callbackQuery.getMessage(), "You selected Telegram Stars payment.");
+                    }
+                }
+
+            } else if (messageBody instanceof ShippingQuery shippingQuery) {
+                log.info("Shipping query, {}", shippingQuery);
+                answerShippingQuery(shippingQuery.getId());
+
+            } else if (messageBody instanceof PreCheckoutQuery preCheckoutQuery) {
+                log.info("Pre checkout query, {}", preCheckoutQuery);
+                answerPreCheckoutQuery(preCheckoutQuery.getId());
+
+            } else {
+                log.error("Unsupported message, {}", messageBody.getClass().getSimpleName());
+            }
+        });
+    }
+
+    void sendMessage(final String chatId, final String message) {
+        final var response = producer.send("direct:send", exchange -> {
+            exchange.getMessage().setHeader("CamelTelegramChatId", chatId);
+            exchange.getMessage().setBody(message);
+        });
+        final var messageResult = response.getMessage().getBody(MessageResult.class);
+        log.info("Result,  {}", messageResult);
+    }
+
+    void sendPaymentRequest(final String chatId) {
+        final var keyboardBuilder = InlineKeyboardMarkup.builder();
+
+        keyboardBuilder.addRow(List.of(InlineKeyboardButton.builder()
+                .text("Credit Card")
+                .callbackData(CREDIT_CARD)
+                .build()));
+
+        keyboardBuilder.addRow(List.of(InlineKeyboardButton.builder()
+                .text("Invoice Link")
+                .callbackData(INVOICE_LINK)
+                .build()));
+
+        keyboardBuilder.addRow(List.of(InlineKeyboardButton.builder()
+                .text("Telegram Stars")
+                .callbackData(TELEGRAM_STARS)
+                .build()));
+
+        sendKeyboardMessage(chatId, "How would you like to pay?", keyboardBuilder.build());
+    }
+
+    void hidePaymentKeyboard(final IncomingMessage message, final String newText) {
+        producer.send("direct:send", exchange -> {
+            exchange.getMessage()
+                    .setHeader("CamelTelegramChatId", message.getChat().getId());
+
+            final var editMessage = EditMessageTextMessage.builder()
+                    .messageId(message.getMessageId().intValue())
+                    .text(newText)
+                    .replyMarkup(null)
+                    .build();
+            exchange.getMessage().setBody(editMessage);
+        });
+    }
+
+    void sendKeyboardMessage(final String chatId, final String text, final ReplyMarkup replyMarkup) {
+        final var response = producer.send("direct:send", exchange -> {
+            exchange.getMessage().setHeader("CamelTelegramChatId", chatId);
+
+            final var message = new OutgoingTextMessage();
+            message.setText(text);
+            message.setReplyMarkup(replyMarkup);
+            exchange.getMessage().setBody(message);
+        });
+
+        log.info("Response, {}", response);
+    }
+
+    void sendInvoice(final String chatId) {
+        final var response = producer.send("direct:send", exchange -> {
+            final var orderId = UUID.randomUUID().toString();
+
+            final var sendInvoiceMessage = new SendInvoiceMessage();
+            sendInvoiceMessage.setChatId(chatId);
+            sendInvoiceMessage.setTitle("Camel Framework");
+            sendInvoiceMessage.setDescription("Camel is an Open Source integration framework");
+            sendInvoiceMessage.setPayload(orderId);
+            sendInvoiceMessage.setProviderToken(paymentToken);
+            sendInvoiceMessage.setCurrency("RUB");
+            sendInvoiceMessage.setMaxTipAmount(50000);
+            sendInvoiceMessage.setSuggestedTipAmounts(List.of(1000, 5000, 10000));
+            sendInvoiceMessage.setPrices(List.of(new LabeledPrice("Total", 100 * 100)));
+            sendInvoiceMessage.setNeedEmail(Boolean.TRUE);
+            sendInvoiceMessage.setSendEmailToProvider(Boolean.TRUE);
+            sendInvoiceMessage.setFlexible(Boolean.TRUE);
+
+            // Provider specific data field, receipt info, etc
+            sendInvoiceMessage.setProviderData(null);
+
+            log.info("Message {}", sendInvoiceMessage);
+
+            exchange.getMessage().setBody(sendInvoiceMessage);
+        });
+
+        log.info("{}", response);
+    }
+
+    String createInvoiceLink() {
+        final var response = producer.send("direct:send", exchange -> {
+            final var orderId = UUID.randomUUID().toString();
+
+            // Workaround, set fake chatId
+            exchange.getMessage().setHeader("CamelTelegramChatId", orderId);
+
+            final var createInvoiceLinkMessage = new CreateInvoiceLinkMessage();
+            createInvoiceLinkMessage.setTitle("Camel Framework");
+            createInvoiceLinkMessage.setDescription("Camel is an Open Source integration framework");
+            createInvoiceLinkMessage.setPayload(orderId);
+            createInvoiceLinkMessage.setProviderToken(paymentToken);
+            createInvoiceLinkMessage.setCurrency("RUB");
+            createInvoiceLinkMessage.setMaxTipAmount(50000);
+            createInvoiceLinkMessage.setSuggestedTipAmounts(List.of(1000, 5000, 10000));
+            createInvoiceLinkMessage.setPrices(List.of(new LabeledPrice("Total", 100 * 100)));
+            createInvoiceLinkMessage.setNeedEmail(Boolean.TRUE);
+            createInvoiceLinkMessage.setSendEmailToProvider(Boolean.TRUE);
+            createInvoiceLinkMessage.setFlexible(Boolean.TRUE);
+
+            // Provider specific data field, receipt info, etc
+            createInvoiceLinkMessage.setProviderData(null);
+
+            log.info("Message {}", createInvoiceLinkMessage);
+
+            exchange.getMessage().setBody(createInvoiceLinkMessage);
+        });
+
+        final var invoiceLink =
+                response.getMessage().getBody(MessageResultString.class).getResult();
+        log.info("Invoice link, {}", invoiceLink);
+        return invoiceLink;
+    }
+
+    public void answerPreCheckoutQuery(final String queryId) {
+        final var response = producer.send("direct:send", exchange -> {
+            // Workaround, set fake chatId
+            exchange.getMessage().setHeader("CamelTelegramChatId", queryId);
+
+            final var answerPreCheckoutQueryMessage = new AnswerPreCheckoutQueryMessage(queryId, true, null);
+            log.info("Message, {}", answerPreCheckoutQueryMessage);
+            exchange.getMessage().setBody(answerPreCheckoutQueryMessage);
+        });
+
+        log.info("Response, {}", response.getMessage().getBody(MessageResultBoolean.class));
+    }
+
+    public void answerShippingQuery(final String queryId) {
+        final var response = producer.send("direct:send", exchange -> {
+            // Workaround, set fake chatId
+            exchange.getMessage().setHeader("CamelTelegramChatId", queryId);
+
+            final var answerShippingQueryMessage = new AnswerShippingQueryMessage(
+                    queryId,
+                    true,
+                    List.of(
+                            new ShippingOption(
+                                    "car",
+                                    "Car",
+                                    List.of(new LabeledPrice("Today", 10000), new LabeledPrice("Tomorrow", 5000))),
+                            new ShippingOption(
+                                    "bike",
+                                    "Bike",
+                                    List.of(new LabeledPrice("Today", 5000), new LabeledPrice("Tomorrow", 2500)))),
+                    null);
+            log.info("Message, {}", answerShippingQueryMessage);
+            exchange.getMessage().setBody(answerShippingQueryMessage);
+        });
+
+        log.info("Response, {}", response.getMessage().getBody(MessageResultBoolean.class));
+    }
+}

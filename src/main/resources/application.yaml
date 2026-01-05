@@ -1,0 +1,13 @@
+quarkus:
+  log:
+    min-level: TRACE
+    category:
+      "org.apache.camel.component.telegram":
+        level: INFO
+camel:
+  component:
+    telegram:
+      authorization-token: ${TG_AUTH_TOKEN}
+tg:
+  payment:
+    token: ${TG_PAYMENT_TOKEN}
