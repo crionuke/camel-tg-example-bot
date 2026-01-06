@@ -1,8 +1,6 @@
 package sh.byv;
 
 import jakarta.enterprise.context.ApplicationScoped;
-import java.util.List;
-import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.camel.ProducerTemplate;
@@ -13,7 +11,6 @@ import org.apache.camel.component.telegram.model.IncomingMessage;
 import org.apache.camel.component.telegram.model.InlineKeyboardButton;
 import org.apache.camel.component.telegram.model.InlineKeyboardMarkup;
 import org.apache.camel.component.telegram.model.MessageResult;
-import org.apache.camel.component.telegram.model.MessageResultBoolean;
 import org.apache.camel.component.telegram.model.MessageResultString;
 import org.apache.camel.component.telegram.model.OutgoingTextMessage;
 import org.apache.camel.component.telegram.model.ReplyMarkup;
@@ -26,6 +23,9 @@ import org.apache.camel.component.telegram.model.payments.SendInvoiceMessage;
 import org.apache.camel.component.telegram.model.payments.ShippingOption;
 import org.apache.camel.component.telegram.model.payments.ShippingQuery;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+
+import java.util.List;
+import java.util.UUID;
 
 @Slf4j
 @ApplicationScoped
@@ -64,7 +64,7 @@ public class TelegramRoutes extends RouteBuilder {
                     }
                 }
             } else if (messageBody instanceof IncomingCallbackQuery callbackQuery) {
-                log.info("Callback query, {}", callbackQuery);
+                log.info("{}", callbackQuery);
 
                 final var chatId = callbackQuery.getMessage().getChat().getId();
 
@@ -84,11 +84,11 @@ public class TelegramRoutes extends RouteBuilder {
                 }
 
             } else if (messageBody instanceof ShippingQuery shippingQuery) {
-                log.info("Shipping query, {}", shippingQuery);
+                log.info("{}", shippingQuery);
                 answerShippingQuery(shippingQuery.getId());
 
             } else if (messageBody instanceof PreCheckoutQuery preCheckoutQuery) {
-                log.info("Pre checkout query, {}", preCheckoutQuery);
+                log.info("{}", preCheckoutQuery);
                 answerPreCheckoutQuery(preCheckoutQuery.getId());
 
             } else {
@@ -151,15 +151,16 @@ public class TelegramRoutes extends RouteBuilder {
             exchange.getMessage().setBody(message);
         });
 
-        log.info("Response, {}", response);
+        log.info("{}", response);
     }
 
     void sendInvoice(final String chatId) {
         final var response = producer.send("direct:send", exchange -> {
+            exchange.getMessage().setHeader("CamelTelegramChatId", chatId);
+
             final var orderId = UUID.randomUUID().toString();
 
             final var sendInvoiceMessage = new SendInvoiceMessage();
-            sendInvoiceMessage.setChatId(chatId);
             sendInvoiceMessage.setTitle("Camel Framework");
             sendInvoiceMessage.setDescription("Camel is an Open Source integration framework");
             sendInvoiceMessage.setPayload(orderId);
@@ -175,21 +176,17 @@ public class TelegramRoutes extends RouteBuilder {
             // Provider specific data field, receipt info, etc
             sendInvoiceMessage.setProviderData(null);
 
-            log.info("Message {}", sendInvoiceMessage);
+            log.info("{}", sendInvoiceMessage);
 
             exchange.getMessage().setBody(sendInvoiceMessage);
         });
 
-        log.info("{}", response);
+        log.info("{}", response.getMessage().getBody(MessageResult.class));
     }
 
     String createInvoiceLink() {
         final var response = producer.send("direct:send", exchange -> {
             final var orderId = UUID.randomUUID().toString();
-
-            // Workaround, set fake chatId
-            exchange.getMessage().setHeader("CamelTelegramChatId", orderId);
-
             final var createInvoiceLinkMessage = new CreateInvoiceLinkMessage();
             createInvoiceLinkMessage.setTitle("Camel Framework");
             createInvoiceLinkMessage.setDescription("Camel is an Open Source integration framework");
@@ -206,7 +203,7 @@ public class TelegramRoutes extends RouteBuilder {
             // Provider specific data field, receipt info, etc
             createInvoiceLinkMessage.setProviderData(null);
 
-            log.info("Message {}", createInvoiceLinkMessage);
+            log.info("{}", createInvoiceLinkMessage);
 
             exchange.getMessage().setBody(createInvoiceLinkMessage);
         });
@@ -219,22 +216,16 @@ public class TelegramRoutes extends RouteBuilder {
 
     public void answerPreCheckoutQuery(final String queryId) {
         final var response = producer.send("direct:send", exchange -> {
-            // Workaround, set fake chatId
-            exchange.getMessage().setHeader("CamelTelegramChatId", queryId);
-
             final var answerPreCheckoutQueryMessage = new AnswerPreCheckoutQueryMessage(queryId, true, null);
             log.info("Message, {}", answerPreCheckoutQueryMessage);
             exchange.getMessage().setBody(answerPreCheckoutQueryMessage);
         });
 
-        log.info("Response, {}", response.getMessage().getBody(MessageResultBoolean.class));
+        log.info("{}", response.getMessage().getBody(MessageResult.class));
     }
 
     public void answerShippingQuery(final String queryId) {
         final var response = producer.send("direct:send", exchange -> {
-            // Workaround, set fake chatId
-            exchange.getMessage().setHeader("CamelTelegramChatId", queryId);
-
             final var answerShippingQueryMessage = new AnswerShippingQueryMessage(
                     queryId,
                     true,
@@ -248,10 +239,10 @@ public class TelegramRoutes extends RouteBuilder {
                                     "Bike",
                                     List.of(new LabeledPrice("Today", 5000), new LabeledPrice("Tomorrow", 2500)))),
                     null);
-            log.info("Message, {}", answerShippingQueryMessage);
+            log.info("{}", answerShippingQueryMessage);
             exchange.getMessage().setBody(answerShippingQueryMessage);
         });
 
-        log.info("Response, {}", response.getMessage().getBody(MessageResultBoolean.class));
+        log.info("{}", response.getMessage().getBody(MessageResult.class));
     }
 }
