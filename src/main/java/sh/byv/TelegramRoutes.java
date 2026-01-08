@@ -14,6 +14,7 @@ import org.apache.camel.component.telegram.model.MessageResult;
 import org.apache.camel.component.telegram.model.MessageResultString;
 import org.apache.camel.component.telegram.model.OutgoingTextMessage;
 import org.apache.camel.component.telegram.model.ReplyMarkup;
+import org.apache.camel.component.telegram.model.SendChatActionMessage;
 import org.apache.camel.component.telegram.model.payments.AnswerPreCheckoutQueryMessage;
 import org.apache.camel.component.telegram.model.payments.AnswerShippingQueryMessage;
 import org.apache.camel.component.telegram.model.payments.CreateInvoiceLinkMessage;
@@ -58,6 +59,10 @@ public class TelegramRoutes extends RouteBuilder {
                     final var chatId = incomingMessage.getChat().getId();
 
                     if (text.equals("/start")) {
+                        sendChatAction(chatId, SendChatActionMessage.Action.TYPING);
+                        // Sleep is just for demo purposes to show the typing action
+                        Thread.sleep(1000);
+
                         sendMessage(
                                 chatId, "Hello, " + incomingMessage.getFrom().getFirstName());
                         sendPaymentRequest(chatId);
@@ -95,6 +100,17 @@ public class TelegramRoutes extends RouteBuilder {
                 log.error("Unsupported message, {}", messageBody.getClass().getSimpleName());
             }
         });
+    }
+
+    void sendChatAction(final String chatId, final SendChatActionMessage.Action action) {
+        final var response = producer.send("direct:send", exchange -> {
+            exchange.getMessage().setHeader("CamelTelegramChatId", chatId);
+
+            final var sendChatActionMessage = new SendChatActionMessage(action);
+            exchange.getMessage().setBody(sendChatActionMessage);
+        });
+        final var messageResult = response.getMessage().getBody(MessageResult.class);
+        log.info("Result,  {}", messageResult);
     }
 
     void sendMessage(final String chatId, final String message) {
