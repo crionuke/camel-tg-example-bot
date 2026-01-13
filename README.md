@@ -10,7 +10,7 @@ component manually:
 ```bash
 git clone https://github.com/apache/camel.git
 cd camel
-mvn install -pl components/camel-telegram -am -DskipTests
+./mvnw install -pl components/camel-telegram -am -DskipTests
 ```
 
 ## Configuration

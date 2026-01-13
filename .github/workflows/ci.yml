@@ -21,5 +21,16 @@ jobs:
           distribution: temurin
           cache: maven
 
+      - name: Checkout Camel
+        uses: actions/checkout@v5
+        with:
+          repository: apache/camel
+          ref: main
+          path: camel
+      - name: Install camel-telegram
+        run: |
+          cd camel
+          mvn -pl components/camel-telegram -am install -DskipTests
+
       - name: Build
         run: ./mvnw verify -B
