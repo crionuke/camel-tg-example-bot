@@ -12,6 +12,7 @@ import org.apache.camel.component.telegram.model.InlineKeyboardButton;
 import org.apache.camel.component.telegram.model.InlineKeyboardMarkup;
 import org.apache.camel.component.telegram.model.MessageResult;
 import org.apache.camel.component.telegram.model.MessageResultString;
+import org.apache.camel.component.telegram.model.OutgoingCallbackQueryMessage;
 import org.apache.camel.component.telegram.model.OutgoingTextMessage;
 import org.apache.camel.component.telegram.model.ReplyMarkup;
 import org.apache.camel.component.telegram.model.SendChatActionMessage;
@@ -82,6 +83,8 @@ public class TelegramRoutes extends RouteBuilder {
                 }
             } else if (messageBody instanceof IncomingCallbackQuery callbackQuery) {
                 log.info("{}", callbackQuery);
+
+                answerCallbackQuery(callbackQuery.getId());
 
                 final var chatId = callbackQuery.getMessage().getChat().getId();
 
@@ -354,6 +357,17 @@ public class TelegramRoutes extends RouteBuilder {
                 response.getMessage().getBody(MessageResultString.class).getResult();
         log.info("Invoice link, {}", invoiceLink);
         return invoiceLink;
+    }
+
+    public void answerCallbackQuery(final String queryId) {
+        final var response = producer.send("direct:send", exchange -> {
+            final var outgoingCallbackQueryMessage = new OutgoingCallbackQueryMessage();
+            outgoingCallbackQueryMessage.setCallbackQueryId(queryId);
+            log.info("Message, {}", outgoingCallbackQueryMessage);
+            exchange.getMessage().setBody(outgoingCallbackQueryMessage);
+        });
+
+        log.info("{}", response.getMessage().getBody(MessageResult.class));
     }
 
     public void answerPreCheckoutQuery(final String queryId) {
